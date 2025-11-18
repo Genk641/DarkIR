@@ -17,15 +17,13 @@ os.environ["CUDA_VISIBLE_DEVICES"]= "0" # you need to fix this before importing 
 # PyTorch library
 import torch
 import torch.optim
-import torch.multiprocessing as mp
-import torch.distributed as dist
 
 from data.dataset_reader.datapipeline import *
 from archs import *
 from losses import *
 from data import *
 from utils.utils import create_path_models
-from utils.test_utils import *
+from utils.test_utils import eval_model
 from ptflops import get_model_complexity_info
 
 #parameters for saving model
@@ -49,36 +47,27 @@ def load_model(model, path_weights):
     
     return model
 
-def run_evaluation(rank, world_size):
-    
-    setup(rank, world_size=world_size)
-    # LOAD THE DATALOADERS
-    test_loader, _ = create_test_data(rank, world_size=world_size, opt = opt['datasets'])
-    # DEFINE NETWORK
-    model, _, _ = create_model(opt['network'], rank=rank)
+def run_evaluation(device):
+
+    test_loader, _ = create_test_data(rank=0, world_size=1, opt=opt['datasets'])
+    model, _, _ = create_model(opt['network'], rank=device)
 
     model = load_model(model, opt['save']['path'])
     metrics_eval = {}
 
-    # Ensure all processes have reached this point
-    dist.barrier()
-    # eval phase
     model.eval()
-    metrics_eval, _ = eval_model(model, test_loader, metrics_eval, rank=rank, world_size=world_size, eta = True)
-    # Ensure all processes have reached this point
-    dist.barrier()
-    # print some results
-    if rank==0:
-        if type(next(iter(metrics_eval.values()))) == dict:
-            for key, metric_eval in metrics_eval.items():
-                print(f" \t {key} --- PSNR: {metric_eval['valid_psnr']}, SSIM: {metric_eval['valid_ssim']}, LPIPS: {metric_eval['valid_lpips']}")
-        else:
-            print(f" \t {opt['datasets']['name']} --- PSNR: {metrics_eval['valid_psnr']}, SSIM: {metrics_eval['valid_ssim']}, LPIPS: {metrics_eval['valid_lpips']}")
-    cleanup()
+    metrics_eval, _ = eval_model(model, test_loader, metrics_eval, device=device, eta=True)
+
+    if type(next(iter(metrics_eval.values()))) == dict:
+        for key, metric_eval in metrics_eval.items():
+            print(f" \t {key} --- PSNR: {metric_eval['valid_psnr']}, SSIM: {metric_eval['valid_ssim']}, LPIPS: {metric_eval['valid_lpips']}")
+    else:
+        print(f" \t {opt['datasets']['name']} --- PSNR: {metrics_eval['valid_psnr']}, SSIM: {metrics_eval['valid_ssim']}, LPIPS: {metrics_eval['valid_lpips']}")
+
 
 def main():
-    world_size = 1
-    mp.spawn(run_evaluation, args =(world_size,), nprocs=world_size, join=True)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    run_evaluation(device)
 
 if __name__ == '__main__':
     main()

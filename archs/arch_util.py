@@ -2,7 +2,6 @@ import torch
 import numpy as np
 from torch import nn as nn
 from torch.nn import init as init
-import torch.distributed as dist
 from collections import OrderedDict
 
 class LayerNormFunction(torch.autograd.Function):

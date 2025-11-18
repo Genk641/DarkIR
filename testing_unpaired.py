@@ -5,7 +5,6 @@ import os
 import argparse
 from options.options import parse
 from archs.retinexformer import RetinexFormer
-from torch.nn.parallel import DistributedDataParallel as DDP
 
 parser = argparse.ArgumentParser(description="Script for testing")
 parser.add_argument('-p', '--config', type=str, default='./options/test/RealBlur_Night.yml', help = 'Config file of testing')
@@ -17,9 +16,8 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 import torch
 from archs import create_model
 from torchvision.transforms import Resize
-import torch.multiprocessing as mp
 from options.options import parse
-from utils.test_utils import *
+from utils.test_utils import _resolve_device
 from tqdm import tqdm
 from data import create_test_data
 import pyiqa
@@ -27,7 +25,7 @@ from ptflops import get_model_complexity_info
 
 import torch.nn.functional as F
 
-device = 'cuda' if torch.cuda.is_available() else 'cpu'
+device = _resolve_device()
 
 def pad_tensor(tensor, multiple = 8):
     '''
@@ -41,7 +39,7 @@ def pad_tensor(tensor, multiple = 8):
     
     return tensor
 
-def load_model(rank, model, path_weights):
+def load_model(model, path_weights):
     map_location = 'cpu'
     checkpoints = torch.load(path_weights, map_location='cpu', weights_only=False)
    
@@ -54,36 +52,33 @@ def load_model(rank, model, path_weights):
     model.load_state_dict(weights)
     return model
 
-def create_losses(list_of_losses = ['musiq', 'niqe', 'nrqm', 'brisque'], rank=0):
+def create_losses(list_of_losses = ['musiq', 'niqe', 'nrqm', 'brisque'], device=device):
     losses = {}
     for name in list_of_losses:
-        losses[name] = {name: pyiqa.create_metric(name).to(rank)}
-    
+        losses[name] = {name: pyiqa.create_metric(name).to(device)}
+
     return losses
 
 resize = opt['Resize']
 
-def eval_unpaired(rank, world_size):
+def eval_unpaired(device):
 
-    setup(rank, world_size=world_size, Master_port='12354')
+    test_loader, _ = create_test_data(rank=0, world_size=1, opt = opt['datasets'])
 
-    test_loader, _ = create_test_data(rank, world_size=world_size, opt = opt['datasets'])
-
-    model, _, _ = create_model(opt['network'], rank)
-    model = load_model(rank, model, path_weights = opt['save']['path'])
+    model, _, _ = create_model(opt['network'], rank=device)
+    model = load_model(model, path_weights = opt['save']['path'])
     print('Using weights in: ', opt['save']['path'])
-    
+
     names = opt['quali']
-    losses = create_losses(names, rank)
-    if rank==0:
-        pbar = tqdm(total = len(test_loader))
+    losses = create_losses(names, device)
+    pbar = tqdm(total = len(test_loader))
 
     metrics = {name: 0. for name in names}
     model.eval()
     for element, _ in test_loader:
 
         ind_metric = {name: None for name in names}
-        element = element.to(rank)
+        element = element.to(device)
 
         _, _, H, W = element.shape
         if resize and (H >=1500 or W>=1500):
@@ -120,14 +115,11 @@ def eval_unpaired(rank, world_size):
     for name, value in metrics.items():
         print(f'In metric {name} we get: {value / len(test_loader)}')
 
-    if rank == 0:
-        pbar.close()    
-    cleanup()
+    pbar.close()
+
 
 def main():
-    world_size = 1
-    print('Used GPUS:', world_size)
-    mp.spawn(eval_unpaired, args =(world_size,), nprocs=world_size, join=True)
+    eval_unpaired(device)
 
 if __name__ == '__main__':
     main()

@@ -1,11 +1,23 @@
 import torch
 from torch.optim.lr_scheduler import CosineAnnealingLR
-from torch.nn.parallel import DistributedDataParallel as DDP
 from ptflops import get_model_complexity_info
 
-from .DarkIR import DarkIR   
+from .DarkIR import DarkIR
 
-def create_model(opt, rank, adapter = False):
+
+def _resolve_device(rank):
+    if isinstance(rank, torch.device):
+        return rank
+    if isinstance(rank, str):
+        return torch.device(rank)
+    if isinstance(rank, int):
+        if torch.cuda.is_available():
+            return torch.device(f'cuda:{rank}')
+        return torch.device('cpu')
+    return torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+
+def create_model(opt, rank=None, adapter=False):
     '''
     Creates the model.
     opt: a dictionary from the yaml config key network
@@ -22,7 +34,7 @@ def create_model(opt, rank, adapter = False):
                     dilations=opt['dilations'],
                     extra_depth_wise=opt['extra_depth_wise'])
 
-    if rank ==0:
+    if rank in (None, 0):
         print(f'Using {name} network')
 
         input_size = (3, 256, 256)
@@ -32,10 +44,9 @@ def create_model(opt, rank, adapter = False):
     else:
         macs, params = None, None
 
-    model.to(rank)
-    
-    model = DDP(model, device_ids=[rank], find_unused_parameters=adapter)
-    
+    device = _resolve_device(rank)
+    model.to(device)
+
     return model, macs, params
 
 def create_optim_scheduler(opt, model):
@@ -77,13 +88,14 @@ def load_optim(optim, optim_weights):
 
 def resume_model(model,
                  optim,
-                 scheduler, 
-                 path_model, 
-                 rank,resume:str=None):
+                 scheduler,
+                 path_model,
+                 rank,
+                 resume: str = None):
     '''
     Returns the loaded weights of model and optimizer if resume flag is True
     '''
-    map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}
+    map_location = _resolve_device(rank)
     if resume:
         checkpoints = torch.load(path_model, map_location=map_location, weights_only=False)
         weights = checkpoints['model_state_dict']
@@ -190,14 +202,12 @@ def number_common_keys(dict1, dict2):
     
 #     return model, optim, scheduler, start_epochs
 
-def save_checkpoint(model, optim, scheduler, metrics_eval, metrics_train, paths, adapter = False, rank = None):
+def save_checkpoint(model, optim, scheduler, metrics_eval, metrics_train, paths, adapter=False, rank=None):
 
     '''
     Save the .pt of the model after each epoch.
     '''
     best_psnr = metrics_train['best_psnr']
-    if rank!=0: 
-        return best_psnr
     
     if type(next(iter(metrics_eval.values()))) != dict:
         metrics_eval = {'metrics': metrics_eval}
