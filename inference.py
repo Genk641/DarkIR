@@ -4,7 +4,6 @@ import cv2 as cv
 from options.options import parse
 import argparse
 from archs.retinexformer import RetinexFormer
-from torch.nn.parallel import DistributedDataParallel as DDP
 
 parser = argparse.ArgumentParser(description="Script for prediction")
 parser.add_argument('-p', '--config', type=str, default='./options/inference/LOLBlur.yml', help = 'Config file of prediction')
@@ -20,7 +19,6 @@ os.environ["CUDA_VISIBLE_DEVICES"]= "1"
 # PyTorch library
 import torch
 import torch.optim
-import torch.multiprocessing as mp
 from tqdm import tqdm
 from torchvision.transforms import Resize
 
@@ -28,10 +26,10 @@ from data.dataset_reader.datapipeline import *
 from archs import *
 from losses import *
 from data import *
-from utils.test_utils import *
+from utils.test_utils import _resolve_device
 from ptflops import get_model_complexity_info
 
-device = torch.device('cuda') if torch.cuda.is_available() else 'cpu'
+device = _resolve_device()
 
 #define some auxiliary functions
 pil_to_tensor = transforms.ToTensor()
@@ -84,12 +82,9 @@ def load_model(model, path_weights):
 PATH_MODEL = opt['save']['path']
 resize = opt['Resize']
 
-def predict_folder(rank, world_size):
-    
-    setup(rank, world_size=world_size, Master_port='12354')
-    
-    # DEFINE NETWORK, SCHEDULER AND OPTIMIZER
-    model, _, _ = create_model(opt['network'], rank=rank)
+def predict_folder(device):
+
+    model, _, _ = create_model(opt['network'], rank=device)
 
     model = load_model(model, path_weights = opt['save']['path'])
     # create data
@@ -103,8 +98,7 @@ def predict_folder(rank, world_size):
     path_images = [file for file in path_images if not file.endswith('.csv') and not file.endswith('.txt')]
    
     model.eval()
-    if rank==0:
-        pbar = tqdm(total = len(path_images))
+    pbar = tqdm(total = len(path_images))
         
     for path_img in path_images:
         tensor = path_to_tensor(path_img).to(device)
@@ -129,19 +123,16 @@ def predict_folder(rank, world_size):
         output = output[:,:, :H, :W]
         save_tensor(output, os.path.join(PATH_RESULTS, os.path.basename(path_img)))
 
-
         pbar.update(1)
         pass
 
     print('Finished inference!')
-    if rank == 0:
-        pbar.close()   
-    cleanup()
+    pbar.close()
+
 
 def main():
-    world_size = 1
-    print('Used GPUS:', world_size)
-    mp.spawn(predict_folder, args =(world_size,), nprocs=world_size, join=True)
+    print('Using device:', device)
+    predict_folder(device)
 
 if __name__ == '__main__':
     main()

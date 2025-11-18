@@ -19,17 +19,16 @@ os.environ["CUDA_VISIBLE_DEVICES"]= "0"
 # PyTorch library
 import torch
 import torch.optim
-import torch.multiprocessing as mp
 from tqdm import tqdm
 from torchvision.transforms import Resize
 
 from data.dataset_reader.datapipeline import *
 from archs import *
-from utils.test_utils import *
+from utils.test_utils import _resolve_device
 
 from ptflops import get_model_complexity_info
 
-device = torch.device('cuda') if torch.cuda.is_available() else 'cpu'
+device = _resolve_device()
 
 #define some transforms
 pil_to_tensor = transforms.ToTensor()
@@ -112,6 +111,8 @@ def apply_model(model, tensor, resize = False):
         downsample = torch.nn.Identity()
     tensor = downsample(tensor)
     tensor = pad_tensor(tensor)
+    device = next(model.parameters()).device
+    tensor = tensor.to(device)
 
     with torch.no_grad():
         output = model(tensor, side_loss=False)
@@ -124,7 +125,7 @@ def apply_model(model, tensor, resize = False):
     output = output[:,:, :H, :W]
     return output
 
-def inference_video(rank, world_size):
+def inference_video(device):
     '''
     Inferences the video frames and constructs a new video. The result video is a composition of the original and the process ones.
     '''
@@ -134,8 +135,6 @@ def inference_video(rank, world_size):
     parser.add_argument('-i', '--inp_path', type=str, default=None, 
                     help="File path to video")
     args = parser.parse_args()
-
-    setup(rank, world_size=world_size) # setup the torch.distributor
 
     # Open the video file
     cap = cv.VideoCapture(args.inp_path)
@@ -151,13 +150,12 @@ def inference_video(rank, world_size):
     out = cv.VideoWriter(output_path, fourcc, fps, (int(frame_width * 2), frame_height))
 
     # Instantiate model and load weights
-    model, _, _ = create_model(opt['network'], rank=rank)
+    model, _, _ = create_model(opt['network'], rank=device)
     model = load_model(model, path_weights = opt['save']['path'])
 
     model.eval()
 
-    if rank==0:
-        pbar = tqdm(total = int(cap.get(cv.CAP_PROP_FRAME_COUNT)))
+    pbar = tqdm(total = int(cap.get(cv.CAP_PROP_FRAME_COUNT)))
 
     while cap.isOpened():
         ret, frame = cap.read()
@@ -173,20 +171,17 @@ def inference_video(rank, world_size):
         combined = np.hstack((old_frame, frame))
 
         out.write(combined)
-        if rank==0: pbar.update(1)
+        pbar.update(1)
 
     cap.release()
     out.release()
     print('Finished inference!')
-    if rank == 0:
-        pbar.close()   
-    cleanup()
+    pbar.close()
 
 
 def main():
-    world_size = 1
-    print('Used GPUS:', world_size)
-    mp.spawn(inference_video, args =(world_size,), nprocs=world_size, join=True)
+    print('Using device:', device)
+    inference_video(device)
 
 if __name__ == '__main__':
     main()
